@@ -1,3 +1,5 @@
+<img width="1160" height="197" alt="damn" src="https://github.com/user-attachments/assets/634ac298-396c-4411-a524-c64db2922abe" />
+
 **Dicter des mathématiques à voix haute et obtenir un document Typst (.typ + pdf).**
 
 Parler en français, en mêlant explications et formules dites à l'oral. On
