@@ -1,0 +1,22 @@
+[project]
+name = "audio2typst"
+version = "0.1.0"
+description = "Dictée vocale française (prose + maths) vers document Typst structuré"
+requires-python = ">=3.10"
+dependencies = [
+    "sounddevice>=0.5",
+    "numpy>=2.0",
+    "webrtcvad-wheels>=2.0",
+    "faster-whisper>=1.0",
+    "typst>=0.11",
+]
+
+[project.scripts]
+audio2typst = "audio2typst.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

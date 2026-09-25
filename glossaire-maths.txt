@@ -1,0 +1,18 @@
+# Vocabulaire mathématique français dicté à l'oral
+pi
+somme
+k carré
+x carré
+indice
+exposant
+à l'infini
+converge
+diverge
+intégrale
+dérivée
+lagrangien
+epsilon
+delta
+lambda
+théorème
+démonstration
