@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 from pathlib import Path
 
-from .capture import load_wav, record_until_enter, save_wav, segments_vad
+from .capture import (charger_audio, record_until_enter, save_wav,
+                      segments_depuis_audio, segments_vad)
 from .compile import compiler
 from .session import Session
 from .structure import ErreurStructuration, SessionClaude
@@ -18,6 +20,10 @@ BENCH_MODELS = ("small", "large-v3-turbo")
 
 # Chargé d'office : sans lui, `small` corrompt les symboles mathématiques.
 GLOSSAIRE_PAR_DEFAUT = Path("glossaire-maths.txt")
+
+# Si tu parles sans marquer de vraie pause, le tampon ne se viderait jamais et
+# Claude recevrait un pavé. Au-delà de ce volume on envoie quand même.
+SEUIL_TAMPON = 1200
 
 
 def glossaire_effectif(choisi: Path | None) -> Path | None:
@@ -45,7 +51,7 @@ def cmd_record(args: argparse.Namespace) -> int:
 
 
 def cmd_transcribe(args: argparse.Namespace) -> int:
-    audio = load_wav(args.fichier)
+    audio = charger_audio(args.fichier)
     tr = Transcriber(args.model, glossary=load_glossary(glossaire_effectif(args.glossary)))
     result = tr.transcribe(audio)
     print(f"· {result.duration_audio:.1f} s d'audio transcrites en "
@@ -57,7 +63,7 @@ def cmd_transcribe(args: argparse.Namespace) -> int:
 def cmd_bench(args: argparse.Namespace) -> int:
     """Compare les modèles candidats sur un même échantillon : c'est ce qui
     tranche le choix de taille, plutôt qu'une estimation a priori."""
-    audio = load_wav(args.fichier)
+    audio = charger_audio(args.fichier)
     glossary = load_glossary(glossaire_effectif(args.glossary))
     print(f"Échantillon : {audio.size / 16_000:.1f} s"
           f"{' · glossaire actif' if glossary else ''}\n")
@@ -90,7 +96,7 @@ def cmd_dicter(args: argparse.Namespace) -> int:
     premier_tour = True
     with SessionClaude(modele=args.claude_model) as claude:
         for source in sources:
-            audio = load_wav(source) if source else record_until_enter()
+            audio = charger_audio(source) if source else record_until_enter()
             if audio.size == 0:
                 print("Rien à transcrire.", file=sys.stderr)
                 continue
@@ -178,16 +184,87 @@ def _envoyer(claude, sess, tampon: list[str], premier: bool) -> bool:
     return False
 
 
+class Interrupteur:
+    """Bascule pause/reprise à chaque appui sur Entrée.
+
+    Le micro reste physiquement ouvert, mais en pause on jette ce qu'il capte.
+    Sans ça, une conversation à côté de toi pendant ta pause finirait dictée
+    dans le document.
+    """
+
+    def __init__(self) -> None:
+        self.en_pause = False
+        threading.Thread(target=self._ecouter, daemon=True).start()
+
+    def _ecouter(self) -> None:
+        for _ in sys.stdin:
+            self.en_pause = not self.en_pause
+            print("  ⏸  en pause — le micro est ignoré. Entrée pour reprendre."
+                  if self.en_pause else "  ▶  reprise", flush=True)
+
+
+def cmd_importer(args: argparse.Namespace) -> int:
+    """Traite un enregistrement comme `live` traite le micro.
+
+    C'est le mode principal quand on dicte au téléphone : le fichier est
+    converti si besoin, découpé aux silences, et envoyé paragraphe par
+    paragraphe — exactement comme en direct, mais sans contrainte de temps réel.
+    """
+    sess = Session(args.session)
+    try:
+        audio = charger_audio(args.fichier)
+    except (FileNotFoundError, RuntimeError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+    duree = len(audio) / 16_000
+    print(f"Fichier  : {args.fichier}  ({duree / 60:.1f} min)")
+    print(f"Session  : {sess.dossier}\n")
+
+    tr = Transcriber(args.model, glossary=load_glossary(glossaire_effectif(args.glossary)))
+    tampon: list[str] = []
+    premier = True
+    avancement = 0.0
+
+    with SessionClaude(modele=args.claude_model) as claude:
+        for segment, fin_paragraphe in segments_depuis_audio(
+            audio,
+            silence_segment=args.silence_segment,
+            silence_paragraphe=args.silence_paragraphe,
+        ):
+            if segment.size:
+                avancement += segment.size / 16_000
+                reconnu = tr.transcribe(segment)
+                if reconnu.text:
+                    print(f"[{avancement / duree:4.0%}] {reconnu.text}")
+                    tampon.append(reconnu.text)
+
+            trop_long = sum(len(t) for t in tampon) > SEUIL_TAMPON
+            if tampon and (fin_paragraphe or trop_long):
+                if trop_long and not fin_paragraphe:
+                    print("  (pas de pause détectée — envoi sur volume)")
+                premier = _envoyer(claude, sess, tampon, premier)
+                tampon = []
+
+        if tampon:
+            _envoyer(claude, sess, tampon, premier)
+
+    print(f"\nTerminé : {sess.typ}")
+    return 0
+
+
 def cmd_live(args: argparse.Namespace) -> int:
     """Dictée continue. Le VAD découpe pour Whisper, les silences longs
     déclenchent l'envoi à Claude (décision A5)."""
     sess = Session(args.session)
     tr = Transcriber(args.model, glossary=load_glossary(glossaire_effectif(args.glossary)))
     print(f"Session : {sess.dossier}")
-    print(f"Parle. Silence de {args.silence_paragraphe}s = envoi à Claude. Ctrl-C pour finir.\n")
+    print(f"Parle. Silence de {args.silence_paragraphe}s = envoi à Claude.")
+    print("Entrée = pause / reprise · Ctrl-C = terminer\n")
 
     tampon: list[str] = []
     premier = True
+    pause = Interrupteur()
     try:
         with SessionClaude(modele=args.claude_model) as claude:
             for audio, fin_paragraphe in segments_vad(
@@ -195,6 +272,9 @@ def cmd_live(args: argparse.Namespace) -> int:
                 silence_segment=args.silence_segment,
                 silence_paragraphe=args.silence_paragraphe,
             ):
+                if pause.en_pause:
+                    continue          # le tampon reste intact, on reprendra dessus
+
                 if fin_paragraphe:
                     if tampon:
                         premier = _envoyer(claude, sess, tampon, premier)
@@ -217,26 +297,32 @@ def cmd_live(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="audio2typst")
-    parser.add_argument("--model", default="small", help="modèle Whisper (défaut : small)")
-    parser.add_argument("--glossary", type=Path, default=None,
+    # Options communes à toutes les sous-commandes. Déclarées sur un parent
+    # plutôt que sur le parseur principal : sinon `audio2typst live --model X`
+    # échoue et il faut écrire `audio2typst --model X live`, ce que personne
+    # ne devine.
+    commun = argparse.ArgumentParser(add_help=False)
+    commun.add_argument("--model", default="small", help="modèle Whisper (défaut : small)")
+    commun.add_argument("--glossary", type=Path, default=None,
                         help=f"vocabulaire, un terme par ligne (défaut : {GLOSSAIRE_PAR_DEFAUT})")
+
+    parser = argparse.ArgumentParser(prog="audio2typst")
     sub = parser.add_subparsers(dest="commande", required=True)
 
-    p_rec = sub.add_parser("record", help="enregistre au micro puis transcrit")
+    p_rec = sub.add_parser("record", help="enregistre au micro puis transcrit", parents=[commun])
     p_rec.add_argument("--device", type=int, default=None, help="index du périphérique d'entrée")
     p_rec.add_argument("--save", type=Path, default=None, help="conserve le WAV capturé")
     p_rec.set_defaults(func=cmd_record)
 
-    p_tr = sub.add_parser("transcribe", help="transcrit un WAV existant")
+    p_tr = sub.add_parser("transcribe", help="transcrit un WAV existant", parents=[commun])
     p_tr.add_argument("fichier", type=Path)
     p_tr.set_defaults(func=cmd_transcribe)
 
-    p_bench = sub.add_parser("bench", help="compare les modèles candidats sur un WAV")
+    p_bench = sub.add_parser("bench", help="compare les modèles candidats sur un WAV", parents=[commun])
     p_bench.add_argument("fichier", type=Path)
     p_bench.set_defaults(func=cmd_bench)
 
-    p_dic = sub.add_parser("dicter", help="chaîne complète : audio -> Typst -> PDF")
+    p_dic = sub.add_parser("dicter", help="chaîne complète : audio -> Typst -> PDF", parents=[commun])
     p_dic.add_argument("fichiers", nargs="*", type=Path,
                        help="WAV à traiter ; sans argument, enregistre au micro")
     p_dic.add_argument("--session", default=None, help="nom de session (défaut : horodaté)")
@@ -245,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
                        help="permet de corriger le texte brut avant envoi à Claude")
     p_dic.set_defaults(func=cmd_dicter)
 
-    p_live = sub.add_parser("live", help="dictée continue avec découpage automatique")
+    p_live = sub.add_parser("live", help="dictée continue avec découpage automatique", parents=[commun])
     p_live.add_argument("--session", default=None)
     p_live.add_argument("--device", type=int, default=None)
     p_live.add_argument("--claude-model", default="sonnet")
@@ -254,6 +340,15 @@ def main(argv: list[str] | None = None) -> int:
     p_live.add_argument("--silence-paragraphe", type=float, default=2.5,
                         help="silence (s) qui déclenche l'envoi à Claude")
     p_live.set_defaults(func=cmd_live)
+
+    p_imp = sub.add_parser("importer", parents=[commun],
+                           help="traite un enregistrement (téléphone, dictaphone…)")
+    p_imp.add_argument("fichier", type=Path, help="n'importe quel format : m4a, mp3, wav, opus…")
+    p_imp.add_argument("--session", default=None)
+    p_imp.add_argument("--claude-model", default="sonnet")
+    p_imp.add_argument("--silence-segment", type=float, default=0.8)
+    p_imp.add_argument("--silence-paragraphe", type=float, default=2.5)
+    p_imp.set_defaults(func=cmd_importer)
 
     args = parser.parse_args(argv)
     return args.func(args)

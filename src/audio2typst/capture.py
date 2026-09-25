@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import queue
+import shutil
+import subprocess
 import sys
+import tempfile
 import wave
 from pathlib import Path
 
@@ -57,6 +60,43 @@ def load_wav(path: str | Path) -> np.ndarray:
             )
         raw = w.readframes(w.getnframes())
     return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+
+
+def charger_audio(chemin: str | Path) -> np.ndarray:
+    """Charge n'importe quel format audio en float32 mono 16 kHz.
+
+    Les enregistreurs de téléphone produisent du .m4a, du .mp3 ou de l'.opus,
+    en 44,1 ou 48 kHz stéréo. Whisper veut du 16 kHz mono. ffmpeg fait la
+    conversion ; on ne l'appelle que si le fichier n'est pas déjà conforme.
+    """
+    chemin = Path(chemin)
+    if not chemin.exists():
+        raise FileNotFoundError(f"fichier introuvable : {chemin}")
+
+    try:
+        return load_wav(chemin)
+    except (ValueError, wave.Error, EOFError):
+        pass  # mauvais format ou pas un WAV : on convertit
+
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError(
+            f"{chemin.name} n'est pas un WAV 16 kHz mono, et ffmpeg est absent.\n"
+            "Installe-le (sudo apt install ffmpeg) ou fournis un WAV conforme."
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        converti = Path(tmp) / "converti.wav"
+        resultat = subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-y", "-i", str(chemin),
+             "-ar", str(SAMPLE_RATE), "-ac", "1", "-sample_fmt", "s16",
+             str(converti)],
+            capture_output=True, text=True,
+        )
+        if resultat.returncode != 0 or not converti.exists():
+            raise RuntimeError(
+                f"ffmpeg n'a pas pu lire {chemin.name} :\n{resultat.stderr[:300]}"
+            )
+        return load_wav(converti)
 
 
 def save_wav(audio: np.ndarray, path: str | Path) -> Path:

@@ -24,15 +24,22 @@ abonnement Claude Code — pas par une clé API.
 ## Usage
 
 ```bash
-audio2typst live                        # dictée continue, découpage automatique
+audio2typst importer enregistrement.m4a # un fichier déjà enregistré (téléphone…)
+audio2typst live                        # dictée continue au micro
 audio2typst dicter                      # un passage, start/stop manuel
-audio2typst dicter fichier.wav          # depuis un enregistrement
 audio2typst bench fichier.wav           # compare les modèles Whisper
 ```
 
-En dictée continue, un silence court clôt un segment pour Whisper ; un silence
-long (2,5 s par défaut) envoie le bloc accumulé à Claude. Les deux seuils se
-règlent avec `--silence-segment` et `--silence-paragraphe`.
+`importer` accepte tous les formats — m4a, mp3, wav, opus — et les convertit
+lui-même. C'est le mode à privilégier si vous dictez au téléphone : sans
+contrainte de temps réel, vous pouvez utiliser le modèle le plus précis
+(`--model large-v3-turbo`).
+
+Un silence court clôt un segment pour Whisper ; un silence long (2,5 s par
+défaut) envoie le bloc accumulé à Claude. Les deux seuils se règlent avec
+`--silence-segment` et `--silence-paragraphe`, en direct comme à l'import.
+
+En dictée continue, **Entrée** met le micro en pause et **Ctrl-C** termine.
 
 ## Le glossaire n'est pas optionnel
 
