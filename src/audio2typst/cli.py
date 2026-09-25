@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
+import time
 from pathlib import Path
 
 from .capture import (charger_audio, record_until_enter, save_wav,
@@ -24,6 +25,8 @@ GLOSSAIRE_PAR_DEFAUT = Path("glossaire-maths.txt")
 # Si tu parles sans marquer de vraie pause, le tampon ne se viderait jamais et
 # Claude recevrait un pavé. Au-delà de ce volume on envoie quand même.
 SEUIL_TAMPON = 1200
+
+RACINE_SESSIONS = Path("sessions")
 
 
 def glossaire_effectif(choisi: Path | None) -> Path | None:
@@ -203,6 +206,64 @@ class Interrupteur:
                   if self.en_pause else "  ▶  reprise", flush=True)
 
 
+def _cible_typ(args: argparse.Namespace) -> Path | None:
+    """Résout soit `--session NOM`, soit un chemin de .typ donné directement."""
+    if args.fichier is not None:
+        if not args.fichier.exists():
+            print(f"fichier introuvable : {args.fichier}", file=sys.stderr)
+            return None
+        return args.fichier
+    dossier = RACINE_SESSIONS / args.session
+    if not dossier.exists():
+        print(f"session inconnue : {dossier}", file=sys.stderr)
+        return None
+    return dossier / "document.typ"
+
+
+def _compiler_et_dire(source: Path) -> bool:
+    """Affiche le résultat immédiatement : en mode --suivre on regarde défiler,
+    et une sortie mise en tampon donnerait l'impression que rien ne se passe."""
+    res = compiler(source)
+    if res:
+        print(f"  ✓ {res.pdf}", flush=True)
+        return True
+    print(f"  ✗ {res.erreur}", file=sys.stderr, flush=True)
+    return False
+
+
+def cmd_compiler(args: argparse.Namespace) -> int:
+    """Recompile un .typ en PDF, une fois ou à chaque sauvegarde.
+
+    Les passages dictés recompilent tout seuls. Mais si tu retouches le .typ
+    dans ton éditeur, rien ne le fait — d'où cette commande, et surtout son
+    mode `--suivre`.
+    """
+    source = _cible_typ(args)
+    if source is None:
+        return 1
+
+    if not args.suivre:
+        return 0 if _compiler_et_dire(source) else 1
+
+    print(f"Surveillance de {source} — Ctrl-C pour arrêter\n", flush=True)
+    derniere = None
+    try:
+        while True:
+            try:
+                horodatage = source.stat().st_mtime
+            except FileNotFoundError:
+                time.sleep(args.intervalle)
+                continue
+            if horodatage != derniere:
+                derniere = horodatage
+                print(time.strftime("%H:%M:%S"), end=" ", flush=True)
+                _compiler_et_dire(source)
+            time.sleep(args.intervalle)
+    except KeyboardInterrupt:
+        print("\n— surveillance arrêtée —")
+        return 0
+
+
 def cmd_importer(args: argparse.Namespace) -> int:
     """Traite un enregistrement comme `live` traite le micro.
 
@@ -349,6 +410,17 @@ def main(argv: list[str] | None = None) -> int:
     p_imp.add_argument("--silence-segment", type=float, default=0.8)
     p_imp.add_argument("--silence-paragraphe", type=float, default=2.5)
     p_imp.set_defaults(func=cmd_importer)
+
+    p_cmp = sub.add_parser("compiler", parents=[commun],
+                           help="recompiler le PDF après une retouche manuelle du .typ")
+    p_cmp.add_argument("fichier", nargs="?", type=Path, default=None,
+                       help="chemin d'un .typ ; sinon utiliser --session")
+    p_cmp.add_argument("--session", default=None, help="nom de session à recompiler")
+    p_cmp.add_argument("--suivre", action="store_true",
+                       help="recompiler à chaque sauvegarde du fichier")
+    p_cmp.add_argument("--intervalle", type=float, default=0.5,
+                       help="période de vérification en mode --suivre (s)")
+    p_cmp.set_defaults(func=cmd_compiler)
 
     args = parser.parse_args(argv)
     return args.func(args)

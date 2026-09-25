@@ -1,8 +1,19 @@
+# Environnement Python — se reconstruit en une commande, n'a rien à faire ici
 .venv/
-sessions/
 __pycache__/
 *.pyc
-*.wav
-*.pdf
 *.egg-info/
+
+# Tes documents de travail : sessions/<nom>/ contient document.typ, le PDF
+# et le journal des transcriptions. Personnel, et souvent volumineux.
+sessions/
+
+# Enregistrements audio déposés ici avant import
+/download/
+
+# Fichiers audio et PDF où qu'ils soient
+*.wav
 *.m4a
+*.mp3
+*.opus
+*.pdf

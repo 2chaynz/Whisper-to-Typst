@@ -1,82 +1,174 @@
-# audio2typst
+**Dicter des mathématiques à voix haute et obtenir un document Typst (.typ + pdf).**
 
-Dictée vocale française — prose et mathématiques mêlées — vers un document
-Typst structuré, en syntaxe native.
+Parler en français, en mêlant explications et formules dites à l'oral. On
+récupère un `.typ` structuré, en syntaxe Typst native, et son PDF.
 
 ```
-micro → VAD → Whisper (local) → Claude → .typ → PDF
+« la somme des 1 sur k carré, avec k qui va de 1 à l'infini,
+   est égale à pi carré sur 6 »
+                    ↓
+$ sum_(k=1)^infinity 1/k^2 = pi^2/6 $
 ```
 
-## Installation
+Les outils de dictée existants visent tous LaTeX. Aucun ne gère
+un document entier mêlant prose et maths avec Typst.
+
+La reconnaissance de maths parlées reste un problème difficile, les meilleurs
+modèles publiés en 2025 affichent encore 27 à 40 % d'erreur caractère sur des
+équations isolées. Ce projet en tient compte : la correction humaine est prévue
+à chaque étape plutôt qu'ajoutée après coup.
+
+## Installation 
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 ```
 
-Aucune toolchain Rust n'est nécessaire : le compilateur Typst arrive par pip.
-La structuration passe par le CLI `claude` (mode headless), donc par un
-abonnement Claude Code — pas par une clé API.
+Le compilateur Typst arrive par pip. Pas de
+clé API, la structuration passe par le CLI `claude`, donc par un abonnement
+Claude Code.  
 
-> **Ne définissez pas `ANTHROPIC_API_KEY`.** Si la variable est présente,
-> Claude Code bascule en facturation par token au lieu d'utiliser l'abonnement.
+> Si la variable `ANTHROPIC_API_KEY` existe dans ton
+> environnement, Claude Code bascule en facturation par token au lieu d'utiliser
+> ton abonnement.
 
-## Usage
+Il faut aussi `ffmpeg` pour les formats audio autres que le WAV
+(`sudo apt install ffmpeg`). 
+
+## Cas d'usage
+
+### Enregistrer au téléphone puis traiter ensuite
+
+Le mode principal. Enregistre avec le dictaphone de ton téléphone, transfère le
+fichier, lance :
 
 ```bash
-audio2typst importer enregistrement.m4a # un fichier déjà enregistré (téléphone…)
-audio2typst live                        # dictée continue au micro
-audio2typst dicter                      # un passage, start/stop manuel
-audio2typst bench fichier.wav           # compare les modèles Whisper
+.venv/bin/audio2typst importer download/Cl13.m4a --session CL
 ```
 
-`importer` accepte tous les formats — m4a, mp3, wav, opus — et les convertit
-lui-même. C'est le mode à privilégier si vous dictez au téléphone : sans
-contrainte de temps réel, vous pouvez utiliser le modèle le plus précis
-(`--model large-v3-turbo`).
+Tous les formats passent : m4a, mp3, opus, wav ,la conversion est automatique.
+Le fichier est découpé aux silences et envoyé paragraphe par paragraphe.
 
-Un silence court clôt un segment pour Whisper ; un silence long (2,5 s par
-défaut) envoie le bloc accumulé à Claude. Les deux seuils se règlent avec
-`--silence-segment` et `--silence-paragraphe`, en direct comme à l'import.
+Sans contrainte de temps réel, autant prendre le modèle le plus précis :
 
-En dictée continue, **Entrée** met le micro en pause et **Ctrl-C** termine.
+```bash
+.venv/bin/audio2typst importer download/Cl13.m4a --session CL --model large-v3-turbo
+```
 
-## Le glossaire n'est pas optionnel
+### Dicter en direct au micro
 
-`glossaire-maths.txt` est passé à Whisper en `initial_prompt` et biaise la
-reconnaissance vers le vocabulaire mathématique. Mesuré sur le modèle `small` :
+```bash
+.venv/bin/audio2typst live --session CL
+```
 
-| | sans glossaire | avec glossaire |
-|---|---|---|
-| « pi carré sur 6 » | `p² sur 6` | `pi carré sur 6` |
-| « à l'infini » | `l'infinie` | `l'infini` |
+Le document se remplit pendant qu'on parle. Une pause de 2,5 s envoie le bloc
+accumulé. **Entrée** met le micro en pause, **Ctrl-C** termine.
 
-Sans lui, les formules sont silencieusement fausses. Ajoutez-y votre propre
-vocabulaire, un terme par ligne.
+### Retoucher le `.typ` à la main
 
-## Corriger
+Le document est un fichier Typst ordinaire, éditable dans n'importe quel
+éditeur. Les corrections sont détectées et **font autorité** : la dictée
+suivante ne les écrasera pas.
 
-Le document accumulé vit dans la conversation avec Claude. Vous pouvez tout de
-même éditer `sessions/<nom>/document.typ` à la main : la modification est
-détectée par empreinte et réinjectée comme faisant autorité, donc vos choix de
-notation survivent aux passages suivants.
+Mais une retouche manuelle ne recompile pas le PDF. Pour qu'il suive :
 
-`--confirmer` (commande `dicter`) permet de corriger le texte brut avant qu'il
-parte chez Claude — corriger du texte est plus sûr que corriger du Typst.
+```bash
+.venv/bin/audio2typst compiler --session CL --suivre
+```
 
-## Session
+Lancer ça dans un second terminal, garder le lecteur de PDF ouvert à côté, et le
+rendu se met à jour à chaque sauvegarde.
+
+### Enchaîne plusieurs enregistrements
+
+Réutilise le même `--session`. Le document existant est réinjecté, le nouveau
+contenu s'ajoute.
+
+```bash
+.venv/bin/audio2typst importer download/Cl14.m4a --session CL
+.venv/bin/audio2typst importer download/Cl15.m4a --session CL
+```
+
+### Voir ce que Whisper entend
+
+```bash
+.venv/bin/audio2typst transcribe fichier.m4a    # transcription seule
+.venv/bin/audio2typst bench fichier.m4a         # compare les modèles
+```
+
+Ni Claude ni PDF : aucun quota consommé.
+
+## Les sessions
+
+Une session est un dossier de travail. On la nomme, elle persiste, on y
+revient.
 
 ```
-sessions/<nom>/
+sessions/CL/
 ├── document.typ          le document courant
-├── document.pdf
-└── transcriptions.jsonl  texte brut horodaté, avant toute interprétation
+├── document.pdf          sa compilation
+├── transcriptions.jsonl  le texte brut horodaté, avant interprétation
+└── .empreinte            signature du document (détection d'édition manuelle)
 ```
 
-Le journal brut permet de revenir en arrière quand une structuration part de
-travers.
+**Elle est créée automatiquement** au premier `--session CL`. Sans l'option, une
+session horodatée est créée.
+
+**Elle se reprend** en redonnant le même nom, même des jours plus tard et depuis
+un terminal neuf : le document existant est réinjecté dans le contexte avant le
+nouveau passage.
+
+**`transcriptions.jsonl` est le filet.** Il conserve ce que Whisper a réellement
+entendu, avant toute interprétation par Claude. Si une structuration part de
+travers, on retrouve la source.
+
+Le dossier `sessions/` est ignoré par git.
+
+## Le glossaire
+
+`glossaire-maths.txt`, un terme par ligne, chargé automatiquement. Il est passé
+à Whisper pour biaiser la reconnaissance vers ton vocabulaire.
+
+ Mesuré sur le modèle `small` :
+
+| Ce quei est dit | Sans glossaire | Avec |
+|---|---|---|
+| « pi carré sur 6 » | `p² sur 6` ✗ | `pi carré sur 6` ✓ |
+| « à l'infini » | `l'infinie` ✗ | `l'infini` ✓ |
+
+Sans lui, les formules sont **silencieusement fausses**, Claude reçoit « p carré
+sur 6 » et compose consciencieusement $p^2/6$. Ajouter le vocabulaire avant
+chaque nouveau sujet.
+
+## Sous le capot
+
+```
+micro / fichier → VAD → Whisper → Claude → Typst → PDF
+                   │       │        │        │
+              webrtcvad  local    CLI     bindings
+                                claude     Python
+```
+
+Tout tourne **en local** sauf l'étape de structuration. L'audio ne quitte
+jamais la machine ; seul le texte transcrit part chez Claude.
+
+| Étape | Outil | Choix |
+|---|---|---|
+| Découpage | `webrtcvad` | deux seuils : 0,8 s pour Whisper, 2,5 s pour Claude |
+| Transcription | `faster-whisper` | modèle `small` en int8, ~x0,5 du temps réel sur CPU |
+| Structuration | CLI `claude` | un processus persistant, la conversation *est* le document |
+| Composition | bindings Python `typst` | pas de toolchain Rust |
+
+Le code fait environ 1 000 lignes réparties en six modules, dans
+`src/audio2typst/`.
+
+## Pour aller plus loin
+
+**[`explications.md`](explications.md)** : le document détaillé : ce qu'est
+chaque pièce, pourquoi elle est là, tous les cas d'usage pas à pas, les réglages,
+le dépannage, et les mesures qui ont servi à trancher chaque décision technique.
 
 ## Licence
 
 MIT.
-# Whipser-to-Typst

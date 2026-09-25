@@ -13,6 +13,7 @@ que le nouveau passage ; Claude renvoie le document complet à jour.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from types import TracebackType
@@ -120,15 +121,23 @@ class SessionClaude:
             return _nettoyer(evenement["result"])
 
 
-def _nettoyer(sortie: str) -> str:
-    """Retire un éventuel bloc de code englobant.
+# Ponctuation finale restée dans un bloc maths : « $ x = 1 . $ » au lieu de
+# « $ x = 1 $. ». Typst compose alors le point comme un symbole mathématique et
+# l'espacement part de travers. Le prompt l'interdit, mais une consigne reste
+# probabiliste ; ce correctif ne l'est pas.
+_PONCTUATION_EGAREE = re.compile(r"\s+([.,;:])\s*\$")
 
-    Le prompt l'interdit, mais un modèle finit toujours par en produire un et
-    ces trois lignes coûtent moins cher qu'un document Typst qui ne compile pas.
+
+def _nettoyer(sortie: str) -> str:
+    """Retire un bloc de code englobant et sort la ponctuation des maths.
+
+    Le prompt interdit les deux, mais un modèle finit toujours par en produire
+    un — et ces quelques lignes coûtent moins cher qu'un document mal composé.
     """
     texte = sortie.strip()
     if texte.startswith("```"):
         lignes = texte.splitlines()
         if lignes[-1].strip() == "```":
             texte = "\n".join(lignes[1:-1])
+    texte = _PONCTUATION_EGAREE.sub(r" $\1", texte)
     return texte.strip() + "\n"
